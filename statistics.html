@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Statistics</title>
+</head>
+<body>
+    <h1>Statistics</h1>
+    <div class="stats">
+        <h2>Overview</h2>
+        <p>Total Revenue: ${{ stats.total_revenue }}</p>
+        <p>Active Rentals: {{ stats.active_rentals }}</p>
+        <p>Available Cars: {{ stats.available_cars }}</p>
+
+        <h2>Popular Cars</h2>
+        <table>
+            <tr>
+                <th>Model</th>
+                <th>Total Rentals</th>
+            </tr>
+            {% for car in stats.popular_cars %}
+            <tr>
+                <td>{{ car.model }}</td>
+                <td>{{ car.rental_count }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    <a href="{{ url_for('admin_dashboard') }}">Back to Dashboard</a>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Car Rental</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">Car Rental</a>
+            <div class="navbar-nav ms-auto">
+                <div id="auth-buttons">
+                    {% if session.customer_id %}
+                        <span class="navbar-text me-3">Welcome, {{ session.customer_name }}</span>
+                        <a href="/logout" class="btn btn-outline-light">Logout</a>
+                    {% else %}
+                        <a href="/login" class="btn btn-outline-light me-2">Login</a>
+                        <a href="/register" class="btn btn-light">Register</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <h2>Available Cars</h2>
+        <div id="car-list" class="row"></div>
+    </div>
+
+    <script>
+        // Check if user is logged in
+        const customerName = sessionStorage.getItem('customer_name');
+        if (customerName) {
+            document.getElementById('auth-buttons').innerHTML = `
+                <span class="navbar-text me-3">Welcome, ${customerName}</span>
+                <a href="/logout" class="btn btn-outline-light">Logout</a>
+            `;
+        }
+
+        fetch('/cars')
+            .then(response => response.json())
+            .then(cars => {
+                let carList = document.getElementById('car-list');
+                cars.forEach(car => {
+                    carList.innerHTML += `
+                        <div class="col-md-4 mb-4">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h5 class="card-title">${car.model} (${car.year})</h5>
+                                    <p class="card-text">Price: $${car.price_per_day} per day</p>
+                                    <a href="/rent/${car.car_id}" class="btn btn-primary">Rent Now</a>
+                                </div>
+                            </div>
+                        </div>`;
+                });
+            });
+    </script>
+</body>
+</html>

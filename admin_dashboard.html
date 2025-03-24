@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard</title>
+</head>
+<body>
+    <h1>Admin Dashboard</h1>
+    <ul>
+        <li><a href="{{ url_for('admin_view_customers') }}">Manage Customers</a></li>
+        <li><a href="{{ url_for('admin_manage_cars') }}">Manage Cars</a></li>
+        <li><a href="{{ url_for('admin_active_rentals') }}">Active Rentals</a></li>
+        <li><a href="{{ url_for('rental_history') }}">Rental History</a></li>
+        <li><a href="{{ url_for('get_statistics') }}">Statistics</a></li>
+    </ul>
+    <p><a href="{{ url_for('logout') }}">Logout</a></p>
+</body>
+</html>

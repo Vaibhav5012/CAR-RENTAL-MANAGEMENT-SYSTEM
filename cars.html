@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Cars</title>
+</head>
+<body>
+    <h1>Manage Cars</h1>
+    <table>
+        <tr>
+            <th>ID</th>
+            <th>Model</th>
+            <th>Year</th>
+            <th>Price per Day</th>
+            <th>Status</th>
+        </tr>
+        {% for car in cars %}
+        <tr>
+            <td>{{ car.car_id }}</td>
+            <td>{{ car.model }}</td>
+            <td>{{ car.year }}</td>
+            <td>${{ car.price_per_day }}</td>
+            <td>{{ car.status }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <a href="{{ url_for('admin_dashboard') }}">Back to Dashboard</a>
+</body>
+</html>

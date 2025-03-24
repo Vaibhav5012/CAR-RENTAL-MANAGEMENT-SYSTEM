@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Rental History</title>
+</head>
+<body>
+    <h1>Rental History</h1>
+    <table>
+        <tr>
+            <th>Rental ID</th>
+            <th>Customer</th>
+            <th>Car Model</th>
+            <th>Start Date</th>
+            <th>End Date</th>
+            <th>Total Cost</th>
+            <th>Status</th>
+        </tr>
+        {% for rental in rentals %}
+        <tr>
+            <td>{{ rental.rental_id }}</td>
+            <td>{{ rental.first_name }} {{ rental.last_name }}</td>
+            <td>{{ rental.model }}</td>
+            <td>{{ rental.start_date }}</td>
+            <td>{{ rental.end_date }}</td>
+            <td>${{ rental.total_cost }}</td>
+            <td>{{ rental.status }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <a href="{{ url_for('admin_dashboard') }}">Back to Dashboard</a>
+</body>
+</html>
