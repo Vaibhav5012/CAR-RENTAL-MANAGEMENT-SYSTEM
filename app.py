@@ -1,13 +1,27 @@
-from flask import Flask, render_template, request, jsonify, flash, url_for, redirect, session
+from flask import Flask, render_template, request, jsonify, flash, url_for, redirect, session, send_from_directory
 from mysql.connector import pooling
 from datetime import datetime
 from functools import wraps
 from flask import session, redirect, url_for
 import logging
 import mysql
+import google.generativeai as genai
+import json
 
 app = Flask(__name__)
 app.secret_key = 'qwertyuiop'
+
+# Configure Google Gemini AI
+API_KEY = ""  # Replace with your API key
+genai.configure(api_key=API_KEY)
+
+# Load FAQs from a JSON file
+try:
+    with open("faqs.json", "r") as file:
+        faq_data = json.load(file)
+except FileNotFoundError:
+    faq_data = {}
+
 
 # Database configuration
 db_config = {
@@ -15,12 +29,59 @@ db_config = {
     "pool_size": 5,
     "host": "localhost",
     "user": "root",
-    "password": "12345",
+    "password": "",
     "database": "car_rental"
 }
 
 # Create connection pool
 connection_pool = mysql.connector.pooling.MySQLConnectionPool(**db_config)
+
+
+
+# Function to check if a message is in FAQs
+def get_faq_answer(user_input):
+    return faq_data.get(user_input, None)
+
+# Function to chat with Gemini AI
+def chat_with_gemini(user_input):   
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash-lite')  # Correct model name
+        prompt = f"Please provide a short and precise answer to this question about car rentals. Keep the response under 2-3 sentences if possible: {user_input}"
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        logging.error(f"Gemini AI error: {str(e)}")
+        raise
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    if not session.get('customer_id'):
+        return jsonify({
+            "reply": "Please log in to use the chat feature. You can log in using the button at the top right.",
+            "requiresAuth": True
+        }), 401
+
+    data = request.json
+    user_message = data.get("message", "").strip()
+
+    if not user_message:
+        return jsonify({"reply": "I didn't receive any message!"})
+
+    # Check if the question is in the FAQ database
+    faq_answer = get_faq_answer(user_message)
+    if faq_answer:
+        return jsonify({"reply": faq_answer})
+
+    # If not found, ask Gemini AI
+    try:
+        ai_reply = chat_with_gemini(user_message)
+        if not ai_reply:
+            return jsonify({"reply": "I apologize, but I couldn't generate a response at the moment."}), 500
+        return jsonify({"reply": ai_reply})
+    except Exception as e:
+        logging.error(f"Chatbot error: {str(e)}")
+        return jsonify({"reply": "I apologize, but I'm having trouble processing your request at the moment."}), 500
+
 
 # Database connection decorator
 def db_connection(f):
@@ -314,6 +375,40 @@ def admin_search(cursor, conn):
     return jsonify(cursor.fetchall())
 
 
+@app.route('/admin/cars', methods=['POST', 'PUT', 'DELETE'])
+@admin_required
+@db_connection
+def manage_cars(cursor, conn):
+    if request.method == 'POST':
+        data = request.json
+        required_fields = ['model', 'year', 'price_per_day', 'status']
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": "Missing required fields"}), 400
+
+        cursor.execute("""
+            INSERT INTO Cars (model, year, price_per_day, status) 
+            VALUES (%s, %s, %s, %s)
+        """, (data['model'], data['year'], data['price_per_day'], data['status']))
+        conn.commit()
+        return jsonify({"message": "Car added successfully", "id": cursor.lastrowid})
+
+    if request.method == 'PUT':
+        data = request.json
+        cursor.execute("""
+            UPDATE Cars 
+            SET model = %s, year = %s, price_per_day = %s, status = %s 
+            WHERE car_id = %s
+        """, (data['model'], data['year'], data['price_per_day'], data['status'], data['car_id']))
+        conn.commit()
+        return jsonify({"message": "Car updated successfully"})
+
+    if request.method == 'DELETE':
+        car_id = request.args.get('car_id')
+        cursor.execute("DELETE FROM Cars WHERE car_id = %s", (car_id,))
+        conn.commit()
+        return jsonify({"message": "Car deleted successfully"})
+
+
 @app.route('/admin/login', methods=['GET', 'POST'])
 @db_connection
 def admin_login(cursor, conn):
@@ -377,19 +472,6 @@ def rent_page(cursor, conn, car_id):
         return render_template('rent_form.html', car_id=car_id, car=car)
     
     return redirect(url_for('serve_frontend'))
-    
-    data = request.json
-    cursor.execute("SELECT * FROM Customers WHERE email = %s AND password = %s", 
-                  (data['email'], data['password']))
-    customer = cursor.fetchone()
-    if customer:
-        session['customer_id'] = customer['customer_id']
-        session['customer_name'] = f"{customer['first_name']} {customer['last_name']}"
-        return jsonify({
-            "message": "Login successful",
-            "customer_name": session['customer_name']
-        })
-    return jsonify({"error": "Invalid credentials"}), 401
 
 
 @app.route('/logout')
@@ -397,42 +479,6 @@ def logout():
     session.clear()
     return redirect(url_for('serve_frontend'))
 
-
-
-
-
-@app.route('/admin/cars', methods=['POST', 'PUT', 'DELETE'])
-@admin_required
-@db_connection
-def manage_cars(cursor, conn):
-    if request.method == 'POST':
-        data = request.json
-        required_fields = ['model', 'year', 'price_per_day', 'status']
-        if not all(field in data for field in required_fields):
-            return jsonify({"error": "Missing required fields"}), 400
-
-        cursor.execute("""
-            INSERT INTO Cars (model, year, price_per_day, status) 
-            VALUES (%s, %s, %s, %s)
-        """, (data['model'], data['year'], data['price_per_day'], data['status']))
-        conn.commit()
-        return jsonify({"message": "Car added successfully", "id": cursor.lastrowid})
-
-    if request.method == 'PUT':
-        data = request.json
-        cursor.execute("""
-            UPDATE Cars 
-            SET model = %s, year = %s, price_per_day = %s, status = %s 
-            WHERE car_id = %s
-        """, (data['model'], data['year'], data['price_per_day'], data['status'], data['car_id']))
-        conn.commit()
-        return jsonify({"message": "Car updated successfully"})
-
-    if request.method == 'DELETE':
-        car_id = request.args.get('car_id')
-        cursor.execute("DELETE FROM Cars WHERE car_id = %s", (car_id,))
-        conn.commit()
-        return jsonify({"message": "Car deleted successfully"})
 
 
 
