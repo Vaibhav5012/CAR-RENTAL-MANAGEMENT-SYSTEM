@@ -1,27 +1,18 @@
-from flask import Flask, render_template, request, jsonify, flash, url_for, redirect, session, send_from_directory
-from mysql.connector import pooling
+from flask import Flask, render_template, request, jsonify, flash, url_for, redirect, session
+import mysql.connector
 from datetime import datetime
 from functools import wraps
-from flask import session, redirect, url_for
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+import faiss
+import numpy as np
+import json
 import logging
 import mysql
-import google.generativeai as genai
-import json
 
 app = Flask(__name__)
 app.secret_key = 'qwertyuiop'
-
-# Configure Google Gemini AI
-API_KEY = ""  # Replace with your API key
-genai.configure(api_key=API_KEY)
-
-# Load FAQs from a JSON file
-try:
-    with open("faqs.json", "r") as file:
-        faq_data = json.load(file)
-except FileNotFoundError:
-    faq_data = {}
-
 
 # Database configuration
 db_config = {
@@ -29,7 +20,7 @@ db_config = {
     "pool_size": 5,
     "host": "localhost",
     "user": "root",
-    "password": "",
+    "password": "12345",
     "database": "car_rental"
 }
 
@@ -37,51 +28,73 @@ db_config = {
 connection_pool = mysql.connector.pooling.MySQLConnectionPool(**db_config)
 
 
+# Load Q&A knowledge base
+try:
+    with open("combined_knowledge_base.json", "r") as f:
+        knowledge_data = json.load(f)
+    
+    if not isinstance(knowledge_data, list):
+        raise ValueError("Knowledge base must be a list of question-answer pairs")
+    
+    questions = [item["question"] for item in knowledge_data]
+    answers = [item["answer"] for item in knowledge_data]
+except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+    logging.error(f"Error loading knowledge base: {str(e)}")
+    questions = []
+    answers = []
 
-# Function to check if a message is in FAQs
-def get_faq_answer(user_input):
-    return faq_data.get(user_input, None)
+# Load embedding model
+embedder = SentenceTransformer('all-MiniLM-L6-v2')
+question_embeddings = embedder.encode(questions)
 
-# Function to chat with Gemini AI
-def chat_with_gemini(user_input):   
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash-lite')  # Correct model name
-        prompt = f"Please provide a short and precise answer to this question about car rentals. Keep the response under 2-3 sentences if possible: {user_input}"
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        logging.error(f"Gemini AI error: {str(e)}")
-        raise
+# Build FAISS index
+index = faiss.IndexFlatL2(question_embeddings.shape[1])
+index.add(np.array(question_embeddings))
 
+# Load DistilGPT2
+tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
+model = AutoModelForCausalLM.from_pretrained("distilgpt2")
+
+# RAG pipeline
+def get_context(user_input):
+    user_embedding = embedder.encode([user_input])
+    distances, indices = index.search(np.array(user_embedding), k=1)
+    
+    # Add distance threshold to ensure relevant matches
+    if distances[0][0] < 2.0:  # Adjust threshold as needed
+        return answers[indices[0][0]]
+    return None
+
+def generate_response(user_input):
+    context = get_context(user_input)
+    
+    if context:
+        response = f"{context}"
+    else:
+        response = "I apologize, but I don't have specific information about that. Please contact our customer service for more detailed assistance."
+    
+    return response
+
+# Fix: Remove the duplicate chat route and keep only one
 @app.route("/chat", methods=["POST"])
 def chat():
-    if not session.get('customer_id'):
-        return jsonify({
-            "reply": "Please log in to use the chat feature. You can log in using the button at the top right.",
-            "requiresAuth": True
-        }), 401
-
-    data = request.json
-    user_message = data.get("message", "").strip()
-
-    if not user_message:
-        return jsonify({"reply": "I didn't receive any message!"})
-
-    # Check if the question is in the FAQ database
-    faq_answer = get_faq_answer(user_message)
-    if faq_answer:
-        return jsonify({"reply": faq_answer})
-
-    # If not found, ask Gemini AI
+    user_input = request.json.get("message", "").strip()
+    if not user_input:
+        return jsonify({"response": "Please ask a question."})
+    
     try:
-        ai_reply = chat_with_gemini(user_message)
-        if not ai_reply:
-            return jsonify({"reply": "I apologize, but I couldn't generate a response at the moment."}), 500
-        return jsonify({"reply": ai_reply})
+        bot_response = generate_response(user_input)
+        return jsonify({"response": bot_response})
     except Exception as e:
-        logging.error(f"Chatbot error: {str(e)}")
-        return jsonify({"reply": "I apologize, but I'm having trouble processing your request at the moment."}), 500
+        logging.error(f"Chat error: {str(e)}")
+        return jsonify({"response": "I apologize, but I encountered an error. Please try again."})
 
+# Remove this duplicate route definition
+# @app.route("/chat", methods=["POST"])
+# def chat():
+#     user_input = request.json.get("message")
+#     bot_response = generate_response(user_input)
+#     return jsonify({"response": bot_response})
 
 # Database connection decorator
 def db_connection(f):
@@ -162,23 +175,46 @@ def login(cursor, conn):
             return redirect(url_for('serve_frontend'))
         return render_template('login.html')
     
-    data = request.json
-    if not data or 'email' not in data or 'password' not in data:
-        return jsonify({"error": "Email and password are required"}), 400
+    try:
+        data = request.json
+        if not data or 'email' not in data or 'password' not in data:
+            return jsonify({"error": "Email and password are required"}), 400
 
-    cursor.execute("SELECT * FROM Customers WHERE email = %s AND password = %s", 
-                  (data['email'], data['password']))
-    customer = cursor.fetchone()
-    if customer:
-        session['customer_id'] = customer['customer_id']
-        session['customer_name'] = f"{customer['first_name']} {customer['last_name']}"
-        return jsonify({
-            "message": "Login successful",
-            "customer_name": session['customer_name']
-        })
-    return jsonify({"error": "Invalid credentials"}), 401
+        # Direct comparison with hashed password in database
+        cursor.execute("""
+            SELECT * FROM Customers 
+            WHERE email = %s AND password = SHA2(%s, 256)
+        """, (data['email'], data['password']))
+        
+        customer = cursor.fetchone()
+        if customer:
+            session['customer_id'] = customer['customer_id']
+            session['customer_name'] = f"{customer['first_name']} {customer['last_name']}"
+            return jsonify({
+                "message": "Login successful",
+                "customer_name": session['customer_name']
+            })
+        
+        return jsonify({"error": "Invalid credentials"}), 401
+    except Exception as e:
+        logging.error(f"Login error: {str(e)}")
+        return jsonify({"error": "Login failed"}), 500
 
 @app.route('/cars', methods=['GET'])
+@db_connection
+def display_cars(cursor, conn):
+    cursor.execute("""
+        SELECT * FROM Cars 
+        WHERE status = 'Available'
+        ORDER BY price_per_day
+    """)
+    cars = cursor.fetchall()
+    return render_template('cars.html', cars=cars, 
+                          customer_name=session.get('customer_name'),
+                          customer_id=session.get('customer_id'))
+
+# Rename the existing cars API endpoint
+@app.route('/api/cars', methods=['GET'])
 @db_connection
 def get_available_cars(cursor, conn):
     cursor.execute("""
@@ -254,9 +290,16 @@ def complete_rental(cursor, conn, rental_id):
 
 @app.route('/')
 def serve_frontend():
-    return render_template('index.html')
+    return render_template('home.html', 
+                         customer_name=session.get('customer_name'),
+                         customer_id=session.get('customer_id'))
 
-
+# Fix the index.html route to serve the home template directly instead of redirecting
+#@app.route('/index.html')
+#def index_page():
+    return render_template('home.html', 
+                         customer_name=session.get('customer_name'),
+                         customer_id=session.get('customer_id'))
 
 @app.route('/admin/customers')
 @admin_required
@@ -446,15 +489,26 @@ def register(cursor, conn):
         return jsonify({"error": "Missing required fields"}), 400
 
     try:
+        # Add email duplicate check
+        cursor.execute("SELECT customer_id FROM Customers WHERE email = %s", (data['email'],))
+        if cursor.fetchone():
+            return jsonify({"error": "Email already registered"}), 400
+            
+        # Hash the password before storing
+        cursor.execute("SELECT SHA2(%s, 256) as hashed_password", (data['password'],))
+        hashed_result = cursor.fetchone()
+        hashed_password = hashed_result['hashed_password']
+            
         cursor.execute("""
             INSERT INTO Customers (first_name, last_name, email, phone, address, password) 
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (data['first_name'], data['last_name'], data['email'], 
-              data['phone'], data['address'], data['password']))
+              data['phone'], data['address'], hashed_password))
         conn.commit()
         return jsonify({"message": "Registration successful", "id": cursor.lastrowid})
-    except mysql.connector.IntegrityError:
-        return jsonify({"error": "Email already registered"}), 400
+    except mysql.connector.Error as e:
+        logging.error(f"Database error during registration: {str(e)}")
+        return jsonify({"error": "Registration failed"}), 500
 
 
 @app.route('/rent/<int:car_id>', methods=['GET', 'POST'])
@@ -480,6 +534,66 @@ def logout():
     return redirect(url_for('serve_frontend'))
 
 
+
+@app.route('/profile', methods=['GET', 'POST'])
+@db_connection
+def profile(cursor, conn):
+    if not session.get('customer_id'):
+        return redirect(url_for('login'))
+    
+    customer_id = session.get('customer_id')
+    
+    if request.method == 'GET':
+        cursor.execute("SELECT customer_id, first_name, last_name, email, phone, address FROM Customers WHERE customer_id = %s", (customer_id,))
+        customer = cursor.fetchone()
+        if not customer:
+            return redirect(url_for('logout'))
+        
+        # Get rental history
+        cursor.execute("""
+            SELECT r.*, c.model, c.make 
+            FROM Rentals r
+            JOIN Cars c ON r.car_id = c.car_id
+            WHERE r.customer_id = %s
+            ORDER BY r.start_date DESC
+        """, (customer_id,))
+        rentals = cursor.fetchall()
+        
+        return render_template('profile.html', 
+                              customer=customer, 
+                              rentals=rentals,
+                              customer_name=session.get('customer_name'))
+    
+    if request.method == 'POST':
+        data = request.json
+        
+        # Update customer information
+        cursor.execute("""
+            UPDATE Customers 
+            SET first_name = %s, last_name = %s, phone = %s, address = %s
+            WHERE customer_id = %s
+        """, (data['first_name'], data['last_name'], data['phone'], data['address'], customer_id))
+        
+        # Update password if provided and old password matches
+        if 'password' in data and data['password'] and 'old_password' in data:
+            # Verify old password
+            cursor.execute("""
+                SELECT customer_id FROM Customers 
+                WHERE customer_id = %s AND password = SHA2(%s, 256)
+            """, (customer_id, data['old_password']))
+            
+            if cursor.fetchone():
+                cursor.execute("UPDATE Customers SET password = SHA2(%s, 256) WHERE customer_id = %s", 
+                              (data['password'], customer_id))
+            else:
+                return jsonify({"error": "Incorrect old password"}), 400
+        
+        conn.commit()
+        
+        # Update session name
+        session['customer_name'] = f"{data['first_name']} {data['last_name']}"
+        
+        return jsonify({"message": "Profile updated successfully"})
 
 
 if __name__ == '__main__':
